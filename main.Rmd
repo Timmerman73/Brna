@@ -1,0 +1,365 @@
+---
+title: "brna_seq_R"
+output: html_notebook
+---
+Benodigheden:
+Het Rmarkdown script Main.rdm
+De bestanden:
+	metadata14.txt
+	countdata14.txt
+	featureData.txt
+Verder zijn de gmt pathway bestanden nodig.
+	h.all.v7.5.1.symbols.gmt
+	c6.all.v7.5.1.symbols.gmt
+	c2.cp.kegg.v7.5.1.symbols.gmt
+	c2.cp.reactome.v7.5.1.symbols.gmt
+
+Verder moeten er ook een aantal packages geinstaleerd zijn. Deze zijn:
+	DESeq2
+	apeglm
+	ashr
+	pheatmap
+	vsn
+	fgsea
+	Rcp
+	ggplot2
+	hexbin
+	RColorBrewer
+	dplyr
+	goseq
+	rtracklayer
+	BSgenome
+	org.Hs.eg.db
+	GO.db
+	clusterProfiler
+	AnnotationDbi
+	R.utils
+	pathview
+	
+Deze packages willen vaak zelf extra packages installeren. Deze zijn ook allemaal nodig. 
+Deze kunnen geinstaleerd worden door de BiocManager met BiocManager::install("PACKAGE_NAAM")
+
+Het gaat om een R markdown script. Zodat de coden in blokken uitgevoerd kan worden.
+Alle code kan in 1x uitgevoerd worden door op run te clicken en dan helemaal onderaan op run all te clicken.
+
+Alle resultaten worden opgeslagen in de out directory. Deze wordt automatisch aangemaakt. 
+Uitzondering hierop zijn de clusterProfiler kegg pathways. Deze staan in de working directory van het script.
+```{r}
+library(DESeq2)
+library(apeglm)
+library(ashr)
+library(pheatmap)
+library(vsn)
+library(fgsea)
+library(Rcpp)
+library(ggplot2)
+library(hexbin)
+library("RColorBrewer")
+library(dplyr)
+library(goseq)
+library(rtracklayer)
+library(BSgenome)
+library(org.Hs.eg.db)
+library(GO.db)
+library(clusterProfiler)
+library("AnnotationDbi")
+library(R.utils)
+library(pathview)
+R.utils::setOption("clusterProfiler.download.method","auto")
+dir.create("out") # HIER worden alle afbeeldingen in gezet.
+```
+Delete Variables
+```{r}
+remove(countdata)
+remove(metadata)
+remove(featureData)
+remove(DESeq_matrix)
+remove(model_matrix)
+remove(dds)
+remove(res)
+remove(vst)
+remove(nsd)
+```
+Create variables
+```{r}
+countdata <- read.delim("countdata14.txt") #veranderen namen zodat het duidelijker is welk type elk sample heeft.
+names(countdata) = c("TN__X3_2046_B","TN__X7_2472_B","TN__X9_2492_B","LUM__X11_2653_B","LUM__X15_2677_B","LUM__X17_2691_B","LUM__X23_2817_B","LUM__X25_2852_B")
+metadata <- read.delim("metadata14.txt")
+rownames(metadata) = c("TN__X3_2046_B","TN__X7_2472_B","TN__X9_2492_B","LUM__X11_2653_B","LUM__X15_2677_B","LUM__X17_2691_B","LUM__X23_2817_B","LUM__X25_2852_B")
+featureData <- read.delim("featureData.txt")
+DESeq_matrix = DESeqDataSetFromMatrix(colData = metadata,countData = countdata,design = ~type )
+dds = DESeq(DESeq_matrix)
+res = results(dds)
+model_matrix = model.matrix(~type,data = metadata)
+write.table(head(countdata,n=5), file = "out/5_count.csv",sep = ";")
+write.table(model_matrix, file = "out/model_matrix.csv",sep = ";")
+vst = vst(dds)
+resOrdered <- res[order(res$padj),]
+resSig <- subset(resOrdered, padj < 0.1)
+
+```
+Ready data to check for counts
+
+UItleggen hoe je filtert en waarom je filtert (gen met minder dan 10 counts ove ralle samples niet mee) 
+```{r}
+# missing value detection
+sum(is.na(countdata))
+png("out/unnorm_count_boxplot.png",width=1280, height=720)
+boxplot(log10(counts(dds)+1),main = "Unnormalized counts per sample",xlab = "Sample", ylab = "Log 10 of counts + 1",cex.lab = 2,cex.main = 2)
+dev.off()
+#Functie hierboven is identiek aan boxplot(log(countdata + 1))
+png("out/norm_count_boxplot.png",width=1280, height=720)
+boxplot(log10(counts(dds,normalized=TRUE)+1),main = "Normalized counts per sample",xlab = "Sample", ylab = "Log 10 of counts + 1",cex.lab = 2,cex.main = 2)
+dev.off()
+write.table(format(t(data.frame(lapply(data.frame(counts(dds,normalized=TRUE)), quantile))),digits = 2),file = "out/quantiles.csv", sep= ";",dec=",")
+#colSums(counts(DE_SEQ))
+#boxplot(log10(assays(DE_SEQ)[["cooks"]]), range=0, las=2)
+png("out/pca.png")
+plotPCA(vst,intgroup = c("type"))
+dev.off()
+```
+LogFoldChange_shrink
+```{r}
+resLFC <- lfcShrink(dds, coef="type_TN_vs_LUM", type="apeglm")
+ntd <- normTransform(dds)
+
+```
+
+Plots WC4
+```{r}
+xlim <- c(1,1e6)
+ylim <- c(-10,10)
+png(filename = "out/Log_fold_shrink.png",width = 700, height = 490)
+plotMA(resLFC, xlim=xlim, ylim=ylim, main="Ma plot van de log fold shrinkage met apeglm",alpha = 0.01,cex.lab = 1.5,cex.main = 1.5,cex.axis = 1.5)
+dev.off()
+# hier worden countplots gemaakt van de 5 genen met de laagste adjusted p values
+top_5 = head(resOrdered, n=5)
+i = 1
+gene_indexes = c()
+for (gene_id in row.names(top_5)) {
+  f_name = paste("out/padj_",toString(i),"_",gene_id,".png",sep = "")
+  
+  gene_indexes[length(gene_indexes) + 1] = grep(gene_id,rownames(featureData))
+  png(filename = f_name)
+  plotCounts(dds, gene=grep(gene_id,rownames(res)), intgroup="type",main =  paste("lowest padj rank: ", i," GeneID: ", gene_id,sep = ""))
+  dev.off()
+  i = i + 1
+}
+# COUNTS VAN HET RET GEN OPZOEKEN 
+countdata[grep("ENSG00000165731",rownames(countdata)),]
+res[grep("ENSG00000165731",rownames(res)),]
+write.table(format(featureData[gene_indexes, ],digits = 4), file = "out/top_5_feature.csv",sep=";",dec=",")
+write.table(format(cbind(data.frame(head(resOrdered,n=5)),featureData[gene_indexes,]), digits = 4), file = "out/top_5_feature_res.csv",sep = ";",dec=",") # problem with commas and dots mix up
+write.table(format(data.frame(head(resOrdered,n=5)),digits = 4),file = "out/top_5_res.csv",sep=";",dec=",")
+
+
+vul_res = data.frame(res) %>% mutate(threshold = padj < 0.01)
+png(filename = "out/vulcano_plot.png")
+ggplot(vul_res) +
+  geom_point(aes(x = log2FoldChange, y = -log10(padj), color = threshold)) +
+  xlab("log2 fold change") +
+  ylab("-log10 adjusted p-value") +
+  theme(legend.position = "right",
+  plot.title = element_text(size = rel(1.5), hjust = 0.5),
+  axis.title = element_text(size = rel(1.25)))
+dev.off()
+
+```
+heatmap
+```{r}
+rld = rlog(dds)
+topVarGenes = head(order(-rowVars(assay(rld))),1000)
+
+mat = assay(rld)[ topVarGenes, ]
+#select <- order(rowMeans(counts(rld,normalized=TRUE)),decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)["type"])
+png(filename = "out/1k_heatmap.png")
+pheatmap(mat, cluster_rows=TRUE, show_rownames=T,
+         cluster_cols=FALSE,scale = "row", annotation_col=df) #log fold change heatmap
+dev.off()
+
+sampleDists <- dist(t(assay(vst)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vst$type, sep="-")
+colnames(sampleDistMatrix) <- paste(vst$type, sep="-")
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+png(filename = "out/sample_heatmap.png")
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+dev.off()
+
+```
+Ranks
+```{r}
+ranks = resLFC$log2FoldChange
+names(ranks) = featureData$external_gene_id
+ranks = na.omit(ranks)
+png(filename = "out/barplot.png")
+barplot(sort(ranks, decreasing = T),ylab = "Log2foldchange", xlab="Gene ID", main = "Barplot van de gesorteerde ranks per gen")
+dev.off()
+
+#TN LUM
+```
+
+
+H.all
+
+```{r}
+#TN LUM
+h_all_pathways = gmtPathways("h.all.v7.5.1.symbols.gmt")
+sum(is.na(ranks)) # missing values
+fgsea_res = fgsea(h_all_pathways,ranks,minSize = 15, maxSize = 500) # Soms geeft dit foutmelding dat moet r studio opnieuw opgestart wroden.
+halM_UPREG = fgsea_res %>%
+  filter(ES > 0) %>%
+  top_n(10, wt=-padj)
+
+halM_DOWNREG = fgsea_res %>%
+  filter(ES < 0) %>%
+  top_n(10,wt=-padj)
+halM_TOP_DES = bind_rows(halM_UPREG, halM_DOWNREG) %>%
+arrange(-ES)
+png(filename = "out/h_all_pathways.png", width = 800, height = 500)
+plotGseaTable(h_all_pathways[halM_TOP_DES$pathway],ranks,fgsea_res,gseaParam = 0.5,colwidths = c(7, 3, 0.5, 0.7, 0.7))
+dev.off()
+```
+
+c6
+```{r}
+#TN LUM
+c6_all_pathways = gmtPathways("c6.all.v7.5.1.symbols.gmt")
+sum(is.na(ranks)) # missing values
+fgsea_res_C6 = fgsea(c6_all_pathways,ranks,minSize = 15, maxSize = 500)
+c6_UPREG = fgsea_res_C6 %>%
+filter(ES > 0) %>%
+top_n(10,wt=-padj)
+C6_DOWNREG = fgsea_res_C6 %>%
+filter(ES < 0) %>%
+top_n(10,wt=-padj)
+C6_TOP_DES = bind_rows(c6_UPREG, C6_DOWNREG) %>%
+arrange(-ES)
+png(filename = "out/c6_pathways.png", width = 800, height = 500)
+plotGseaTable(c6_all_pathways[C6_TOP_DES$pathway],ranks,fgsea_res_C6,gseaParam = 0.5)
+dev.off()
+```
+
+
+c2 kegg
+```{r}
+#TN LUM
+C2_KEGG_pathways = gmtPathways("c2.cp.kegg.v7.5.1.symbols.gmt")
+fgsea_res_C2_K = fgsea(C2_KEGG_pathways,ranks,minSize = 15, maxSize = 500)
+C2K_UPREG = fgsea_res_C2_K %>%
+filter(ES > 0) %>%
+top_n(10,wt=-padj)
+C2K_DOWNREG = fgsea_res_C2_K %>%
+filter(ES < 0) %>%
+top_n(10,wt=-padj)
+C2K_TOP_DES = bind_rows(C2K_UPREG, C2K_DOWNREG) %>%
+arrange(-ES)
+C2_KEGG_pathway_TABLE = data.frame(fgsea_res_C2_K[order(padj, -abs(NES)), ])
+png(filename = "out/c2_kegg_pathways.png", width = 800, height = 500)
+plotGseaTable(C2_KEGG_pathways[C2K_TOP_DES$pathway],ranks,fgsea_res_C2_K,gseaParam = 0.5,colwidths = c(6, 3, 0.5, 0.7, 0.7))
+dev.off()
+```
+
+
+Pathway_Analasys c2 react
+
+```{r}
+#TN LUM
+c2_REACT_pathways = gmtPathways("c2.cp.reactome.v7.5.1.symbols.gmt")
+fgsea_res_C2_R = fgsea(c2_REACT_pathways,ranks,minSize = 15, maxSize = 500)
+C2_R_UPREG = fgsea_res_C2_R %>%
+filter(ES > 0) %>%
+top_n(10,wt=-padj)
+C2_R_DOWNREG = fgsea_res_C2_R %>%
+filter(ES < 0) %>%
+top_n(10,wt=-padj)
+C2_R_TOP_DES = bind_rows(C2_R_UPREG, C2_R_DOWNREG) %>%
+arrange(-ES)
+C2_REACT_pathway_TABLE = data.frame(fgsea_res_C2_R[order(padj, -abs(NES)), ])
+png(filename = "out/c2_react_pathways.png", width = 800, height = 500)
+plotGseaTable(c2_REACT_pathways[C2_R_TOP_DES$pathway],ranks,fgsea_res_C2_R,gseaParam = 0.5,colwidths = c(7, 3, 0.5, 0.7, 0.7))
+dev.off()
+```
+Enrichment plots
+```{r}
+png(filename = "out/ESP_hallmark_estrogen_early.png")
+plotEnrichment(h_all_pathways[["HALLMARK_ESTROGEN_RESPONSE_EARLY"]], ranks)
+dev.off()
+png(filename = "out/ESP_hallmark_estrogen_late.png")
+plotEnrichment(h_all_pathways[["HALLMARK_ESTROGEN_RESPONSE_LATE"]], ranks)
+dev.off()
+png(filename = "out/ESP_C2_estrogen_dep_expression.png")
+plotEnrichment(c2_REACT_pathways[["REACTOME_ESTROGEN_DEPENDENT_GENE_EXPRESSION"]], ranks)
+dev.off()
+
+```
+
+Go seq res gen
+```{r}
+isSigGene <- resLFC$padj < 0.01 & !is.na(resLFC$padj)
+genes <- as.integer(isSigGene)
+names(genes)  = featureData$ensembl_gene_id
+sum(is.na(genes))
+genes = na.omit(genes)
+png(filename = "out/goseq_plot.png")
+pwf <- nullp(genes, "hg19", "ensGene", bias.data = NULL)
+dev.off()
+sum(na.omit(resLFC$padj) < 0.01) / length(na.omit(resLFC$padj)) # percentage significante genen
+goResults <- goseq(pwf, "hg19","ensGene", test.cats=c("GO:BP"),use_genes_without_cat = F) #kijken wat dat genes without cat doet
+20884 / length(rownames(res)) # percentage onbekend
+```
+
+
+
+
+Go seq img
+```{r}
+png(filename = "out/goseq_pathway.png",width = 600 , height = 400)
+goResults %>% 
+    top_n(10, wt=-over_represented_pvalue) %>% 
+    mutate(hitsPerc=numDEInCat*100/numInCat) %>% 
+    ggplot(aes(x=hitsPerc, 
+               y=term, 
+               colour=over_represented_pvalue, 
+               size=numDEInCat)) +
+        geom_point() +
+        expand_limits(x=0) +
+        labs(x="Percentage of significant genes in pathway (%)", y="GO pathway", colour="p value", size="Count")
+dev.off()
+
+```
+kegg_pathway_mapping
+```{r}
+resLFC$Entrez = mapIds(org.Hs.eg.db,
+                    keys=row.names(resLFC), #Column containing Ensembl gene ids
+                    column="ENTREZID",
+                    keytype="ENSEMBL",
+                    multiVals="first")
+
+sum(is.na(resLFC$Entrez)) / length(rownames(resLFC)) # Percentage zonder mapping
+
+sigGenes_k <- resLFC$Entrez[ resLFC$padj < 0.01 & 
+                              !is.na(resLFC$padj) & 
+                              abs(resLFC$log2FoldChange) > 1 ]
+sigGenes_k <- na.omit(sigGenes_k)
+kk <- enrichKEGG(gene = sigGenes_k, organism = 'hsa')
+hkk = head(kk, n=5) #only 4 does not matter
+
+write.table(format(data.frame(kk),digits = 2),file = "out/kegg_path.csv", sep = ";")
+logFC <- resLFC$log2FoldChange
+names(logFC) <- resLFC$Entrez
+for (path_id in hkk$ID) {
+    pathview(gene.data = logFC, 
+         pathway.id = path_id, 
+         species = "hsa", 
+         limit = list(gene=5, cpd=1))
+}
+```
+
+
+
+
